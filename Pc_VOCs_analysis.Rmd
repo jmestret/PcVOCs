@@ -1,0 +1,587 @@
+---
+title: "Pc VOCs - Analysis report"
+author: "Jorge Mestre-Tomás and Alba Fuster-Alonso"
+date: "`r paste0('  ','Date', ': ', format(Sys.time(), '%d %B %Y'))`"
+output:
+  html_document:
+    number_sections: false
+    toc: true
+    toc_float:
+      collapsed: true
+      smooth_scroll: false
+    toc_depth: 3
+    code_folding: hide
+    theme: lumen
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+
+# Select your running options
+# doRiceExploratory = Rice exploratory analysis
+# doCzapekExploratory = Czapek exploratory analysis
+# doRiceModel = Rice modeling
+# doCzapekModel = Czapek modelin
+doRiceExploratory = TRUE
+doCzapekExploratory = TRUE
+doRiceModel = TRUE
+doCzapekModel = TRUE
+```
+
+```{r}
+# Load packages
+library(tidyverse)
+library(UpSetR)
+library(grid)
+library(gridExtra)
+library(reshape2)
+library(svglite)
+library(DT)
+library(INLA)
+library(knitr)
+library(rmarkdown)
+
+# Plot theme
+fitolab.palette <- c("#B4C540", "#575A6C", "#EAA221","#3686C9", "#F66657", "#964F4CFF")
+fitolab.palette <- c("#2ECC71", "#F39C12", "#575A6C", "#2980B9", "#D35400", "#C0392B")
+
+mytheme <- theme_classic(base_family = "Helvetica") +
+  theme(axis.line.x = element_line(color="black", size = 0.4),
+        axis.line.y = element_line(color="black", size = 0.4)) +
+  theme(axis.title.x = element_text(size=15),
+        axis.text.x  = element_text(size=12),
+        axis.title.y = element_text(size=15),
+        axis.text.y  = element_text(vjust=0.5, size=12) ) +
+  theme(legend.text = element_text(size = 11), legend.title = element_text(size=12), legend.key.size = unit(0.5, "cm")) +
+  theme(plot.title = element_text(lineheight=.4, size=15, hjust = 0.5)) +
+  theme(plot.margin = unit(c(2,1,1,1), "cm"))
+
+# Load exploratory analysis functions
+minor_major <- function(row, sim_type) {
+  data <- (row["Type"] == sim_type)
+}
+```
+
+# Rice {.tabset}
+
+## Exploratory analysis {.tabset}
+
+### Nº VOCs
+
+```{r, eval=doRiceExploratory}
+# Load data
+rice <- read.table("rice_gcms.tsv", header = TRUE, sep = "\t")
+rice$group <- as.factor(rice$group)
+rice$DAI <- as.factor(rice$DAI)
+paste0("Number of total VOCs: ",length(unique(rice$compound_code)))
+```
+
+### UpSet plot
+
+```{r, eval=doRiceExploratory}
+rice.upset <- rice[,c("compound_code", "group", "DAI", "value")] %>%
+  group_by(compound_code, group, DAI) %>%
+  summarise(n = max(value)) %>%
+  pivot_wider(names_from=c(group, DAI), values_from=n, names_sep = "") %>%
+  mutate(Type = ifelse(max(BS15, BS25, BS35, CH15, CH25, CH35) >= 50000, "Major", "Minor")) %>%
+  mutate_if(is.numeric, ~1 * (. != 0))
+
+#svg(file="rice_upset.svg", width = 5, height = 5)
+upset(as.data.frame(rice.upset), sets = rev(paste0(rep(c("BS", "CH"), each = 1), rep(c(15,15,25,25,35,35), each = 1))), number.angles = 0, sets.bar.color = fitolab.palette[2], nintersects = 200,
+      order.by ="freq", keep.order = TRUE, set_size.show = TRUE,
+      point.size = 3.5, line.size = 2, 
+      mainbar.y.label = "VOCs intersections", sets.x.label = "VOCs per condition", 
+      text.scale = c(1.5, 1.5, 1.5, 1.5, 1.6, 1.5),
+      main.bar.color = fitolab.palette[3], mb.ratio = c(0.6, 0.4),
+      queries = list(list(query = minor_major, params = list("Major"), color = fitolab.palette[1], active = T)))
+#dev.off()
+```
+
+Figure 1A. UpSet plot of the intersection of different VOCs found in the different culture conditions of *P. chlamydosporia* in rice (BS = Control buffer solution, CH = Chitosan solution).
+
+### PCA
+
+```{r, eval = doRiceExploratory}
+rice.pca <- rice %>%
+  pivot_wider(names_from = compound_code, values_from = value)
+
+PCA <- prcomp(scale(rice.pca[,-c(1:3)])) # Scale and PCA
+summary(PCA)
+
+rice.pca <- cbind(rice.pca[,1:3], PCA$x[,1:2])
+rice.pca$DAI <- as.factor(rice.pca$DAI)
+
+#svg(file="rice_pca.svg", width = 5, height = 5)
+plot_PCA <- ggplot(data = rice.pca, aes(x = PC1, y = PC2, color = group, shape = DAI)) +
+  geom_point(size = 3) + theme_classic() +  
+  guides(color = guide_legend(title = "Treatment"), shape = guide_legend(title = "Days after inoculation")) + 
+  geom_hline(yintercept = 0, lty = 2) +
+  geom_vline(xintercept = 0, lty = 2) + 
+  xlab("PC 1 (34.58%)") + 
+  ylab("PC 2 (22.94%)") +
+  scale_color_manual(values=fitolab.palette) +
+  scale_shape_manual(values = c(15,16,17), labels = c("15 DAI", "25 DAI", "35 DAI"))
+#dev.off()
+
+# PCA each time 
+data_times <- rice %>%
+  pivot_wider(names_from = compound_code, values_from = value)
+
+data_times$DAI <- as.factor(data_times$DAI)
+
+data_1 <- data_times[data_times$DAI == "15",]
+data_names <- data_1[,1:3]
+data_1 <- data_1[,-c(1:3)]
+data_1 <- data_1[,colSums(data_1) > 0]
+
+data_2 <- data_times[data_times$DAI == "25",]
+data_names2 <- data_2[,1:3]
+data_2 <- data_2[,-c(1:3)]
+data_2 <- data_2[,colSums(data_2) > 0]
+
+data_3 <- data_times[data_times$DAI == "35",]
+data_names3 <- data_3[,1:3]
+data_3 <- data_3[,-c(1:3)]
+data_3 <- data_3[,colSums(data_3) > 0]
+
+data_1 <- as.data.frame(scale(data_1))
+data_2 <- as.data.frame(scale(data_2))
+data_3 <- as.data.frame(scale(data_3))
+
+PCA_1 <- prcomp(data_1)
+PCA_2 <- prcomp(data_2)
+PCA_3 <- prcomp(data_3)
+
+data_new1 <- cbind(data_names, PCA_1$x[,1:2])
+plot_PCA1 <- ggplot(data = data_new1, aes(x = PC1, y = PC2, color = group)) +
+  geom_point(size = 3) + theme_classic() +  
+  guides(color = guide_legend(title = "Buffer solution vs Chitosan")) + 
+  geom_hline(yintercept = 0, lty = 2) +
+  geom_vline(xintercept = 0, lty = 2) + 
+  xlab("PC 1 (47.31%)") + 
+  ylab("PC 2 (21.51%)") +
+  scale_color_manual(values = c("#FF1BB3","#A7FF5B")) + ggtitle("Culture age 15")
+
+
+data_new2 <- cbind(data_names2, PCA_2$x[,1:2])
+plot_PCA2 <- ggplot(data = data_new2, aes(x = PC1, y = PC2, color = group)) +
+  geom_point(size = 3) + theme_classic() +  
+  guides(color = guide_legend(title = "Buffer solution vs Chitosan")) + 
+  geom_hline(yintercept = 0, lty = 2) +
+  geom_vline(xintercept = 0, lty = 2) + 
+  xlab("PC 1 (48.19%)") + 
+  ylab("PC 2 (35.49%)") +
+  scale_color_manual(values = c("#FF1BB3","#A7FF5B")) + ggtitle("Culture age 25")
+
+
+data_new3 <- cbind(data_names3, PCA_3$x[,1:2])
+plot_PCA3 <- ggplot(data = data_new3, aes(x = PC1, y = PC2, color = group)) +
+  geom_point(size = 3) + theme_classic() +  
+  guides(color = guide_legend(title = "Buffer solution vs Chitosan")) + 
+  geom_hline(yintercept = 0, lty = 2) +
+  geom_vline(xintercept = 0, lty = 2) + 
+  xlab("PC 1 (57.25%)") + 
+  ylab("PC 2 (35.61%)") +
+  scale_color_manual(values = c("#FF1BB3","#A7FF5B")) + ggtitle("Culture age 35")
+
+grid.arrange(plot_PCA, plot_PCA1, plot_PCA2, plot_PCA3, nrow = 2, ncol = 2)
+```
+
+Figure 1B. PCA of the VOCs of *P. chlamydosporia* in rice.
+
+### Lineplots
+
+```{r, eval=doRiceExploratory}
+sel_rice_voc <- c("DC4", "DC11", "DC1", "DC2", "DC20", "DC21")
+rice.lineplots <- rice[rice$compound_code %in% sel_rice_voc,] %>%
+  group_by(compound_code, group, DAI) %>%
+  summarise(m = median(value), sigma = sd(value))
+rice_voc_names <- read.table("rice_c_to_c.tsv", header = T, sep = "\t")
+rice.lineplots <- merge(rice.lineplots, rice_voc_names, by = "compound_code")
+rice.lineplots$compound_name <- factor(rice.lineplots$compound_name, levels = c(
+  "3-Methylbutanoic acid",
+  "Methyl 2,4-dimethylhexanoate",
+  "3-Hydroxybutan-2-one",
+  "Octa-1,3-diene",
+  "(6Z)-7,11-Dimethyl-3-methylene-1,6,10-dodecatriene",
+  "(4S)-1-Methyl-4-(6-methylhepta-1,5-dien-2-yl)cyclohexene"
+))
+rice.lineplots$DAI <- as.numeric(as.character(rice.lineplots$DAI))
+
+#svg(file="rice_lineplots.svg", width = 10, height = 8)
+ggplot(rice.lineplots, aes(x=DAI, y=m, group=group, color=group)) +
+  geom_errorbar(aes(ymin=ifelse(m-sigma < 0, 0,m-sigma), ymax=m+sigma), width=.4, size=1) +
+  geom_line(size=1.2) +
+  geom_point(aes(shape=group),size = 2) +
+  facet_wrap(~compound_name, ncol = 2, scale='free') +
+  labs(x='Days after inoculation', y = 'Peak height')+
+  scale_color_manual(values=fitolab.palette) +
+  mytheme +
+  theme(strip.text.x = element_text(size = 12, face = "bold"),
+        strip.background = element_rect(color = "white")) + 
+  theme(axis.text=element_text(colour="black")) +
+  theme(legend.position = "none") +
+  scale_x_continuous(breaks = c(15, 25, 35))
+#dev.off()
+```
+
+Figure 1C. Line plots with the median value and standard deviations of the peak heights of VOCs
+
+### Supplemental figures
+
+```{r, eval = doRiceExploratory}
+rice.supp <- rice %>%
+  group_by(compound_code, group, DAI) %>%
+  summarise(m = median(value), sigma = sd(value))
+rice_voc_names <- read.table("rice_c_to_c.tsv", header = T, sep = "\t")
+rice.supp <- merge(rice.supp, rice_voc_names, by = "compound_code")
+rice.supp$DAI <- as.numeric(as.character(rice.supp$DAI))
+
+#svg(file="rice_supplemental.svg", width = 10, height = 18)
+ggplot(rice.supp, aes(x=DAI, y=m, group=group, color=group)) +
+  geom_errorbar(aes(ymin=ifelse(m-sigma < 0, 0,m-sigma), ymax=m+sigma), width=.4, size=1) +
+  geom_line(size=1.2) +
+  geom_point(aes(shape=group),size = 2) +
+  facet_wrap(~compound_name, ncol = 3, scale='free') +
+  labs(x='Days after inoculation', y = 'Peak height')+
+  scale_color_manual(values=fitolab.palette) +
+  mytheme +
+  theme(strip.text.x = element_text(size = 12, face = "bold"),
+        strip.background = element_rect(color = "white")) + 
+  theme(axis.text=element_text(colour="black")) +
+  theme(legend.position = "none") +
+  scale_x_continuous(breaks = c(15, 25, 35))
+#dev.off()
+```
+
+## Statistical modeling
+
+```{r, eval=doRiceModel}
+rice.model <- rice
+rice.model$value <- rice.model$value + 0.1 # Sum 0.1 so we don't have 0 values
+
+rice.bf <- c()
+post_sampl <- list()
+contrast1 <- c("CH15", "CH25", "CH35", "CH15", "CH15", "CH25", "BS15", "BS15", "BS25")
+contrast2 <- c("BS15", "BS25", "BS35", "CH25", "CH35", "CH35", "BS25", "BS35", "BS35")
+for (cov in unique(rice.model$compound_code)){ # For each VOC
+  for (time in c("15", "25", "35")){ # For each DAI
+    
+    model <- inla(
+      value ~ group,
+      family = "gamma",
+      control.compute = list(return.marginals.predictor=TRUE, dic = TRUE, waic = TRUE),
+      control.family = list(link = "log", hyper = list(prec = list(
+        prior = "loggamma", param = c(1, 0.5)
+      ))),
+      control.fixed = list(expand.factor.strategy="inla"),
+      data = rice.model[rice.model$compound_code == cov & rice.model$DAI == time,]
+    )
+    
+    BS.post <- model$marginals.fitted.values$fitted.Predictor.1
+    BS.random <- inla.rmarginal(10000000, BS.post)
+    
+    CH.post <- model$marginals.fitted.values$fitted.Predictor.4
+    CH.random <- inla.rmarginal(10000000, CH.post)
+    
+    post_sampl[[paste0("BS", time)]] <- BS.random
+    post_sampl[[paste0("CH", time)]] <- CH.random
+  }
+  
+  bf_list <- c()
+  for (i in 1:length(contrast1)){
+    diff <- post_sampl[[contrast1[i]]] - post_sampl[[contrast2[i]]]
+    BF <- sum(diff > 0)/sum(diff < 0)  # Bayes factor
+    bf_list <- c(bf_list, BF)
+  }
+  
+  rice.bf <- rbind(rice.bf, bf_list)
+}
+rm(post_sampl, diff, BS.random, CH.random, model)
+
+rice.bf <- as.data.frame(rice.bf)
+colnames(rice.bf) <- c("CH15BS15", "CHB25S25", "CH35BS35", "CH15CH25", "CH15CH35", "CH25CH35", "BS15BS25", "BS15BS35", "BS25BS35")
+rownames(rice.bf) <- unique(rice.model$compound_code)
+rice.bf <- round(rice.bf, 2)
+```
+
+### Results tables {.tabset .tabset-fade}
+
+#### Bayes Factor diff
+
+Table 1 shows the Bayes Factor, so that Bayes factors greater than 3 or smaller than 1/3 are telling us that there are differences between the treatment and the control.
+
+```{r, eval=doRiceModel}
+DT::datatable(rice.bf,
+              options = list(
+                pageLength = 5
+              ),
+              escape = FALSE,
+              caption = "Table 1. Bayes Factor of difference > or < 0")
+```
+
+# Czapek {.tabset}
+
+## Exploratory analysis {.tabset}
+
+### Nº VOCs
+
+```{r, eval=doCzapekExploratory}
+# Load data
+czapek <- read.table("czapek_gcms.tsv", header = TRUE, sep = "\t")
+czapek$group <- as.factor(czapek$group)
+czapek$exposure_time <- as.factor(czapek$exposure_time)
+paste0("Number of total VOCs: ",length(unique(czapek$compound_code)))
+```
+
+### UpSet plot
+
+```{r, eval=doCzapekExploratory}
+czapek.upset <- czapek[,c("compound_code", "group", "exposure_time", "value")] %>%
+  group_by(compound_code, group, exposure_time) %>%
+  summarise(n = max(value)) %>%
+  pivot_wider(names_from=c(group, exposure_time), values_from=n, names_sep = "") %>%
+  mutate(Type = ifelse(max(BS24, BS48, BS72, CH24, CH48, CH72) >= 50000, "Major", "Minor")) %>%
+  mutate_if(is.numeric, ~1 * (. != 0))
+
+#svg(file="czapek_upset.svg", width = 5, height = 5)
+upset(as.data.frame(czapek.upset), sets = rev(paste0(rep(c("BS", "CH"), each = 1), rep(c(24,24,48,48,72,72), each = 1))), number.angles = 0, sets.bar.color = fitolab.palette[2], nintersects = 200,
+      order.by ="freq", keep.order = TRUE, set_size.show = TRUE,
+      point.size = 3.5, line.size = 2, 
+      mainbar.y.label = "VOCs intersections", sets.x.label = "VOCs per condition", 
+      text.scale = c(1.5, 1.5, 1.5, 1.5, 1.6, 1.5),
+      main.bar.color = fitolab.palette[3], mb.ratio = c(0.6, 0.4),
+      queries = list(list(query = minor_major, params = list("Major"), color = fitolab.palette[1], active = T)))
+#dev.off()
+```
+
+Figure 2A. UpSet plot of the intersection of different VOCs found in the different culture conditions of *P. chlamydosporia* in Czapek (BS = Control buffer solution, CH = Chitosan solution).
+
+### PCA
+
+```{r, eval = doCzapekExploratory}
+czapek.pca <- czapek %>%
+  pivot_wider(names_from = compound_code, values_from = value)
+
+PCA <- prcomp(scale(czapek.pca[,-c(1:3)])) # Scale and PCA
+summary(PCA)
+
+czapek.pca <- cbind(czapek.pca[,1:3], PCA$x[,1:2])
+czapek.pca$exposure_time <- as.factor(czapek.pca$exposure_time)
+
+#svg(file="czapek_pca.svg", width = 5, height = 5)
+plot_PCA <- ggplot(data = czapek.pca, aes(x = PC1, y = PC2, color = group, shape = exposure_time)) +
+  geom_point(size = 3) + theme_classic() +  
+  guides(color = guide_legend(title = "Treatment"), shape = guide_legend(title = "Exposure time")) + 
+  geom_hline(yintercept = 0, lty = 2) +
+  geom_vline(xintercept = 0, lty = 2) + 
+  xlab("PC 1 (43.61%)") + 
+  ylab("PC 2 (21.72%)") +
+  scale_color_manual(values=fitolab.palette) +
+  scale_shape_manual(values = c(15,16,17), labels = c("24h", "48h", "72h"))
+#dev.off()
+
+# PCA each time 
+data_times <- czapek %>%
+  pivot_wider(names_from = compound_code, values_from = value)
+
+data_times$exposure_time <- as.factor(data_times$exposure_time)
+
+data_1 <- data_times[data_times$exposure_time == "24",]
+data_names <- data_1[,1:3]
+data_1 <- data_1[,-c(1:3)]
+data_1 <- data_1[,colSums(data_1) > 0]
+
+data_2 <- data_times[data_times$exposure_time == "48",]
+data_names2 <- data_2[,1:3]
+data_2 <- data_2[,-c(1:3)]
+data_2 <- data_2[,colSums(data_2) > 0]
+
+data_3 <- data_times[data_times$exposure_time == "72",]
+data_names3 <- data_3[,1:3]
+data_3 <- data_3[,-c(1:3)]
+data_3 <- data_3[,colSums(data_3) > 0]
+
+data_1 <- as.data.frame(scale(data_1))
+data_2 <- as.data.frame(scale(data_2))
+data_3 <- as.data.frame(scale(data_3))
+
+PCA_1 <- prcomp(data_1)
+PCA_2 <- prcomp(data_2)
+PCA_3 <- prcomp(data_3)
+
+data_new1 <- cbind(data_names, PCA_1$x[,1:2])
+plot_PCA1 <- ggplot(data = data_new1, aes(x = PC1, y = PC2, color = group)) +
+  geom_point(size = 3) + theme_classic() +  
+  guides(color = guide_legend(title = "Buffer solution vs Chitosan")) + 
+  geom_hline(yintercept = 0, lty = 2) +
+  geom_vline(xintercept = 0, lty = 2) + 
+  xlab("PC 1 (47.31%)") + 
+  ylab("PC 2 (21.51%)") +
+  scale_color_manual(values = c("#FF1BB3","#A7FF5B")) + ggtitle("Exposure time 24h")
+
+
+data_new2 <- cbind(data_names2, PCA_2$x[,1:2])
+plot_PCA2 <- ggplot(data = data_new2, aes(x = PC1, y = PC2, color = group)) +
+  geom_point(size = 3) + theme_classic() +  
+  guides(color = guide_legend(title = "Buffer solution vs Chitosan")) + 
+  geom_hline(yintercept = 0, lty = 2) +
+  geom_vline(xintercept = 0, lty = 2) + 
+  xlab("PC 1 (48.19%)") + 
+  ylab("PC 2 (35.49%)") +
+  scale_color_manual(values = c("#FF1BB3","#A7FF5B")) + ggtitle("Exposure time 48h")
+
+
+data_new3 <- cbind(data_names3, PCA_3$x[,1:2])
+plot_PCA3 <- ggplot(data = data_new3, aes(x = PC1, y = PC2, color = group)) +
+  geom_point(size = 3) + theme_classic() +  
+  guides(color = guide_legend(title = "Buffer solution vs Chitosan")) + 
+  geom_hline(yintercept = 0, lty = 2) +
+  geom_vline(xintercept = 0, lty = 2) + 
+  xlab("PC 1 (57.25%)") + 
+  ylab("PC 2 (35.61%)") +
+  scale_color_manual(values = c("#FF1BB3","#A7FF5B")) + ggtitle("Exposure time 72h")
+
+grid.arrange(plot_PCA, plot_PCA1, plot_PCA2, plot_PCA3, nrow = 2, ncol = 2)
+```
+
+Figure 2B. PCA of the VOCs of *P. chlamydosporia* in czapek.
+
+### Lineplots
+
+```{r, eval=doCzapekExploratory}
+sel_czapek_voc <- c("DC2", "DC16", "DC19", "DC10")
+czapek.lineplots <- czapek[czapek$compound_code %in% sel_czapek_voc,] %>%
+  group_by(compound_code, group, exposure_time) %>%
+  summarise(m = median(value), sigma = sd(value))
+czapek_voc_names <- read.table("czapek_c_to_c.tsv", header = T, sep = "\t")
+czapek.lineplots <- merge(czapek.lineplots, czapek_voc_names, by = "compound_code")
+czapek.lineplots$compound_name <- factor(czapek.lineplots$compound_name, levels = c(
+  "Oct-1-en-3-ol",
+  "Tetradec-1-ene",
+  "Octadec-9-en-1-ol",
+  "2,6,11-Trimethyldodecane"
+))
+czapek.lineplots$exposure_time <- as.numeric(as.character(czapek.lineplots$exposure_time))
+
+
+#svg(file="czapek_lineplots.svg", width = 10, height = 5.5)
+ggplot(czapek.lineplots, aes(x=exposure_time, y=m, group=group, color=group)) +
+  geom_errorbar(aes(ymin=ifelse(m-sigma < 0, 0,m-sigma), ymax=m+sigma), width=.8, size=1) +
+  geom_line(size=1.2) +
+  geom_point(aes(shape=group),size = 2) +
+  facet_wrap(~compound_name, ncol = 2, scale='free') +
+  labs(x='Exposure time (hours)', y = 'Peak height')+
+  scale_color_manual(values=fitolab.palette) +
+  mytheme +
+  theme(strip.text.x = element_text(size = 12, face = "bold"),
+        strip.background = element_rect(color = "white")) + 
+  theme(axis.text=element_text(colour="black")) +
+  theme(legend.position = "none") +
+  scale_x_continuous(breaks = c(24, 48, 72))
+#dev.off()
+```
+
+Figure 2C. Line plots with the median value and standard deviations of the peak heights of VOCs
+
+### Supplemental figures
+
+```{r, eval = doCzapekExploratory}
+czapek.supp <- czapek %>%
+  group_by(compound_code, group, exposure_time) %>%
+  summarise(m = median(value), sigma = sd(value))
+czapek_voc_names <- read.table("czapek_c_to_c.tsv", header = T, sep = "\t")
+czapek.supp <- merge(czapek.supp, czapek_voc_names, by = "compound_code")
+czapek.supp$exposure_time <- as.numeric(as.character(czapek.supp$exposure_time))
+
+
+#svg(file="czapek_supplemental.svg", width = 10, height = 16)
+ggplot(czapek.supp, aes(x=exposure_time, y=m, group=group, color=group)) +
+  geom_errorbar(aes(ymin=ifelse(m-sigma < 0, 0,m-sigma), ymax=m+sigma), width=.8, size=1) +
+  geom_line(size=1.2) +
+  geom_point(aes(shape=group),size = 2) +
+  facet_wrap(~compound_name, ncol = 3, scale='free') +
+  labs(x='Exposure time (hours)', y = 'Peak height')+
+  scale_color_manual(values=fitolab.palette) +
+  mytheme +
+  theme(strip.text.x = element_text(size = 12, face = "bold"),
+        strip.background = element_rect(color = "white")) + 
+  theme(axis.text=element_text(colour="black")) +
+  theme(legend.position = "none") +
+  scale_x_continuous(breaks = c(24, 48, 72))
+#dev.off()
+```
+
+
+## Statistical modeling
+
+```{r, eval=doCzapekModel}
+czapek.model <- czapek
+czapek.model$value <- czapek.model$value + 0.1 # Sum 0.1 so we don't have 0 values
+
+czapek.bf <- c()
+post_sampl <- list()
+contrast1 <- c("CH24", "CH48", "CH72", "CH24", "CH24", "CH48", "BS24", "BS24", "BS48")
+contrast2 <- c("BS24", "BS48", "BS72", "CH48", "CH72", "CH72", "BS48", "BS72", "BS72")
+for (cov in unique(czapek.model$compound_code)){ # For each VOC
+  for (time in c("24", "48", "72")){ # For each exposure time
+    
+    model <- inla(
+      value ~ group,
+      family = "gamma",
+      control.compute = list(return.marginals.predictor=TRUE, dic = TRUE, waic = TRUE),
+      control.family = list(link = "log", hyper = list(prec = list(
+        prior = "loggamma", param = c(1, 0.5)
+      ))),
+      control.fixed = list(expand.factor.strategy="inla"),
+      data = czapek.model[czapek.model$compound_code == cov & czapek.model$exposure_time == time,]
+    )
+    
+    BS.post <- model$marginals.fitted.values$fitted.Predictor.1
+    BS.random <- inla.rmarginal(10000000, BS.post)
+    
+    CH.post <- model$marginals.fitted.values$fitted.Predictor.4
+    CH.random <- inla.rmarginal(10000000, CH.post)
+    
+    post_sampl[[paste0("BS", time)]] <- BS.random
+    post_sampl[[paste0("CH", time)]] <- CH.random
+  }
+  
+  bf_list <- c()
+  for (i in 1:length(contrast1)){
+    diff <- post_sampl[[contrast1[i]]] - post_sampl[[contrast2[i]]]
+    BF <- sum(diff > 0)/sum(diff < 0)  # Bayes factor
+    bf_list <- c(bf_list, BF)
+  }
+  
+  czapek.bf <- rbind(czapek.bf, bf_list)
+}
+rm(post_sampl, diff, BS.random, CH.random, model)
+
+czapek.bf <- as.data.frame(czapek.bf)
+colnames(czapek.bf) <- c("CH24BS24", "CH48BS48", "CH72BS72", "CH24CH48", "CH24CH72", "CH48CH72", "BS24BS48", "BS24BS72", "BS48BS72")
+rownames(czapek.bf) <- unique(czapek.model$compound_code)
+czapek.bf <- round(czapek.bf, 2)
+```
+
+### Results tables {.tabset .tabset-fade}
+
+#### Bayes Factor diff
+
+Table 1 shows the Bayes Factor, so that Bayes factors greater than 3 or smaller than 1/3 are telling us that there are differences between the treatment and the control.
+
+```{r, eval=doCzapekModel}
+DT::datatable(czapek.bf,
+              options = list(
+                pageLength = 5
+              ),
+              escape = FALSE,
+              caption = "Table 1. Bayes Factor of difference > or < 0")
+```
+
+## sessionInfo
+
+```{r}
+sessionInfo()
+```
+
